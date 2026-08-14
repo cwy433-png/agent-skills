@@ -15,6 +15,7 @@ fix that.
 | Path | What it is |
 |---|---|
 | `skills/local-multi-agent/` | How to make several agents collaborate on one machine without standing up a relay |
+| `skills/local-multi-agent/references/peer-debate.md` | The prompt that drives a two-round exchange between two CLIs, loaded only when running one |
 | `bin/ask` | Vendor-neutral wrapper: `ask <vendor> "<prompt>"` |
 
 ## Install

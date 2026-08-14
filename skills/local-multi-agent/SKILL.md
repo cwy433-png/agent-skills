@@ -53,6 +53,11 @@ instead of falling back.
 If `ask` is not on PATH, check `--help` on the vendor's own CLI rather than
 trusting a remembered flag name.
 
+Some CLIs also expose themselves as an MCP server, which a host that speaks MCP
+can connect to instead of shelling out. That buys structured multi-turn session
+handling at the cost of a per-host connector; `ask` stays the portable option,
+because every host can run a command.
+
 ## Pick the topology first
 
 Most disagreement about "how should agents collaborate" is really disagreement
@@ -194,6 +199,10 @@ Two rounds is usually where real disagreement surfaces; beyond that it circles.
 Ask for an explicit "agreed on / still disagree on" ending — the residual
 disagreement is the useful part, because it names the decision still left to the
 human.
+
+For the mechanics — the prompt that actually drives a two-round exchange, and
+the session-continuity step that is easiest to miss — read
+`references/peer-debate.md` when you are about to run one.
 
 ## When the peer cannot be reached
 
