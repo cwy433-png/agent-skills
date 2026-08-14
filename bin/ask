@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# ask — send one prompt to another agent CLI and print its reply on stdout.
+#
+# Why this exists: every vendor spells the same three ideas differently
+# (headless prompt, auto-approve, resume-by-id). Encoding those spellings in
+# each agent's instructions means N copies that rot independently. Keeping them
+# here means the instructions everywhere can just say `ask <vendor> "..."`, and
+# a vendor renaming a flag is a one-line fix in one file.
+#
+#   ask grok "what breaks first in this design?"
+#   ask codex "review the patch on stdin" < change.diff
+#   ask claude --resume 0199... "and what about the retry path?"
+#
+# Exit codes: 2 = bad usage, 3 = CLI missing, 4 = CLI not authenticated.
+# Anything else is the child's own exit code, passed through unchanged.
+
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+usage: ask <vendor> [--resume <id>] [prompt]
+
+  vendor   grok | codex | claude | deepseek
+  prompt   the message; if omitted, read from stdin
+
+  --resume <id>   continue an existing session instead of starting a new one
+  --list          print which vendors are installed and reachable
+
+Examples:
+  ask grok "attack the weakest part of this argument: ..."
+  echo "review this diff" | ask codex
+  ask claude --resume 019f... "follow up on your last point"
+EOF
+  exit 2
+}
+
+# --- vendor probes ----------------------------------------------------------
+# Each vendor gets a "is it installed" and "is it usable" answer. We keep the
+# not-authenticated case separate from the not-installed case because the fixes
+# are completely different, and a caller that conflates them debugs the wrong
+# layer for a while.
+
+vendor_cmd() {
+  case "$1" in
+    grok)     echo grok   ;;
+    codex)    echo codex  ;;
+    claude)   echo claude ;;
+    deepseek) echo deepseek ;;
+    *)        return 1 ;;
+  esac
+}
+
+list_vendors() {
+  for v in grok codex claude deepseek; do
+    c="$(vendor_cmd "$v")"
+    if command -v "$c" >/dev/null 2>&1; then
+      printf '%-10s installed  (%s)\n' "$v" "$(command -v "$c")"
+    else
+      printf '%-10s missing\n' "$v"
+    fi
+  done
+}
+
+# --- argument parsing -------------------------------------------------------
+
+[ $# -ge 1 ] || usage
+[ "$1" = "--list" ] && { list_vendors; exit 0; }
+
+vendor="$1"; shift
+cmd="$(vendor_cmd "$vendor")" || { echo "ask: unknown vendor '$vendor'" >&2; usage; }
+
+resume=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --resume) resume="${2:-}"; [ -n "$resume" ] || usage; shift 2 ;;
+    --help|-h) usage ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+prompt="${1:-}"
+if [ -z "$prompt" ]; then
+  # No prompt argument: take it from stdin, but only if stdin is not a TTY.
+  # Otherwise we would hang waiting for input the caller never intended to give.
+  if [ -t 0 ]; then usage; fi
+  prompt="$(cat)"
+fi
+[ -n "$prompt" ] || { echo "ask: empty prompt" >&2; exit 2; }
+
+command -v "$cmd" >/dev/null 2>&1 || {
+  echo "ask: '$cmd' is not installed or not on PATH" >&2
+  exit 3
+}
+
+# --- dispatch ---------------------------------------------------------------
+# Flag names below are the part most likely to drift. When a vendor renames
+# something, fix it here; nothing else needs to change.
+
+case "$vendor" in
+  grok)
+    # --always-approve (not --auto-approve) lets tool calls run unattended.
+    if [ -n "$resume" ]; then
+      exec grok -p "$prompt" --always-approve --resume "$resume"
+    else
+      exec grok -p "$prompt" --always-approve
+    fi
+    ;;
+
+  codex)
+    # codex refuses to start outside a Git repository unless told otherwise,
+    # and a sandboxed child has no network by default — which matters as soon
+    # as the task involves reaching any API.
+    codex_args=(
+      exec
+      --skip-git-repo-check
+      -s workspace-write
+      -c sandbox_workspace_write.network_access=true
+    )
+    if [ -n "$resume" ]; then
+      exec codex "${codex_args[@]}" resume "$resume" "$prompt"
+    else
+      exec codex "${codex_args[@]}" "$prompt"
+    fi
+    ;;
+
+  claude)
+    if [ -n "$resume" ]; then
+      exec claude -p "$prompt" --resume "$resume"
+    else
+      exec claude -p "$prompt"
+    fi
+    ;;
+
+  deepseek)
+    # Provided by the delegate-to-deepseek skill, which wraps a second CLI
+    # pointed at DeepSeek's Anthropic-compatible endpoint.
+    exec deepseek "$prompt"
+    ;;
+esac
