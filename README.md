@@ -17,6 +17,8 @@ fix that.
 | `skills/local-multi-agent/` | How to make several agents collaborate on one machine without standing up a relay |
 | `skills/local-multi-agent/references/peer-debate.md` | The prompt that drives a two-round exchange between two CLIs, loaded only when running one |
 | `bin/ask` | Vendor-neutral wrapper: `ask <vendor> "<prompt>"` |
+| `tests/run.sh` | Offline suite for `bin/ask` — stubs on PATH, no credentials or vendor spend |
+| `notes/` | Log of what was actually wrong and how it was found |
 
 ## Install
 
@@ -35,7 +37,7 @@ done
 Put `ask` on your PATH so skills can call it without knowing where it lives:
 
 ```bash
-ln -sfn ~/agent-skills/bin/ask /usr/local/bin/ask
+ln -sfn ~/agent-skills/bin/ask ~/.local/bin/ask   # or any writable dir on PATH
 ```
 
 Verify:
@@ -62,8 +64,41 @@ ask --list
 ```
 
 When a vendor renames a flag, fix it in `bin/ask` and every host picks up the
-change. Exit codes: `2` bad usage, `3` CLI not installed, `4` CLI not
-authenticated; anything else is the child's own exit code.
+change. Exit codes: `2` bad usage, `3` CLI not on PATH; anything else is the
+child's own exit code, including its authentication failures.
+
+Extra input is folded into the prompt rather than replacing or discarding it:
+
+```bash
+ask codex "review this" < change.diff      # a file is combined automatically
+printf '%s' "$diff" | ask codex "review this" -   # a pipe needs a final -
+```
+
+The asymmetry is deliberate. A redirect from a file has its bytes already
+there, so combining is unambiguous. A pipe does not: probing it for waiting
+data races the writer, so input would be dropped on some runs and not others,
+and nothing would tell you which. Reading it unconditionally is worse still —
+it blocks forever when a caller passes down an idle stdin, which is the normal
+situation when one agent invokes another.
+
+### Testing it
+
+`tests/run.sh` runs `bin/ask` against executable stubs — no credentials, no
+network, no vendor spend. Run it after any change:
+
+```bash
+tests/run.sh
+```
+
+It exercises the script as a program rather than asserting over a pure
+argument-building function, because most of what went wrong here was not which
+flags got built: it was stdin damaged in transit, an exit status lost, a probe
+failure aborting the caller. Those only appear when something actually runs.
+
+What it cannot catch is a vendor that keeps accepting a flag while quietly
+changing what the flag means — still exit zero, still plausible output, wrong
+behaviour. No offline test sees that. Re-check against the real CLI when you
+add or change a vendor, and when a vendor's version changes.
 
 ### Pin the model when the answer matters
 
@@ -100,8 +135,15 @@ written down should be the judgement you cannot query.**
 
 A document that repeats a queryable fact has two failure modes and no upside: it
 goes stale silently, and while stale it is *more* convincing than no
-documentation at all, because it reads like knowledge. `ask --list` cannot go
-stale — it stores the method, not the answer.
+documentation at all, because it reads like knowledge. A command that fetches
+the fact stores the method instead of the answer, so the answer is right by
+construction.
+
+The method is not free of the problem, only better placed. `ask --list` parses
+one vendor's output format and another's config file to report their defaults;
+both can change. The difference is that a broken probe is one file to fix and
+its output visibly reads "unknown", while a stale sentence keeps asserting a
+model id that no longer exists.
 
 This sorts naturally into three layers that decay at very different rates, and
 the whole trick is not to let a fast layer leak into a slow one:

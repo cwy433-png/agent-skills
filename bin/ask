@@ -1,33 +1,38 @@
 #!/usr/bin/env bash
 # ask — send one prompt to another agent CLI and print its reply on stdout.
 #
-# Why this exists: every vendor spells the same three ideas differently
-# (headless prompt, auto-approve, resume-by-id). Encoding those spellings in
-# each agent's instructions means N copies that rot independently. Keeping them
-# here means the instructions everywhere can just say `ask <vendor> "..."`, and
-# a vendor renaming a flag is a one-line fix in one file.
+# Why this exists: every vendor spells the same few ideas differently (headless
+# prompt, unattended approval, resume by id, pin the model). Those spellings are
+# vendor knowledge either way; the choice is only whether it lives in one
+# reviewed place or is re-derived on every machine. Re-derivation gets it wrong
+# — this file exists partly because reading `--help` once produced a flag that
+# did not exist. Corrections land here and stay fixed.
 #
 #   ask grok "what breaks first in this design?"
 #   ask codex "review the patch on stdin" < change.diff
 #   ask claude --resume 0199... "and what about the retry path?"
 #
-# Exit codes: 2 = bad usage, 3 = CLI missing, 4 = CLI not authenticated.
-# Anything else is the child's own exit code, passed through unchanged.
+# Exit codes: 2 = bad usage, 3 = CLI not on PATH. Anything else is the child's
+# own exit code, passed through unchanged.
+#
+# Tests: tests/run.sh — runs this script against stubs, no vendor needed.
 
-set -euo pipefail
+set -uo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-usage: ask <vendor> [--model <id>] [--resume <id>] [prompt]
+usage: ask <vendor> [--model <id>] [--resume <id>] [--] [prompt]
 
   vendor   grok | codex | claude | deepseek
-  prompt   the message; if omitted, read from stdin
+  prompt   the message; if omitted, read from stdin. If both are given, the
+           piped text is appended to the prompt.
 
   --model <id>    pin the model instead of taking the vendor's configured
                   default. Worth doing whenever the answer matters: the point
                   of asking a second vendor is a different model, and if you
                   did not name it you do not actually know what you asked.
   --resume <id>   continue an existing session instead of starting a new one
+  --              stop option parsing; everything after is the prompt
   --list          print which vendors are installed, and their default model
 
 Examples:
@@ -39,39 +44,46 @@ EOF
   exit 2
 }
 
-# --- vendor probes ----------------------------------------------------------
-# Each vendor gets a "is it installed" and "is it usable" answer. We keep the
-# not-authenticated case separate from the not-installed case because the fixes
-# are completely different, and a caller that conflates them debugs the wrong
-# layer for a while.
+die() { printf 'ask: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+# ── vendor table ─────────────────────────────────────────────────────────────
 
 vendor_cmd() {
   case "$1" in
-    grok)     echo grok   ;;
-    codex)    echo codex  ;;
-    claude)   echo claude ;;
+    grok)     echo grok     ;;
+    codex)    echo codex    ;;
+    claude)   echo claude   ;;
     deepseek) echo deepseek ;;
     *)        return 1 ;;
   esac
 }
 
-# Report the default each vendor would use when --model is omitted. Knowing
-# this matters more than it looks: an unpinned cross-vendor comparison silently
-# changes meaning whenever one of these configs is edited.
+# Report the default a vendor would use when --model is omitted, so the choice
+# to pin or not is made with the value visible. Probes are best-effort by
+# construction: a vendor that is installed but not signed in makes its probe
+# fail, and --list is exactly the command someone runs to find that out. It
+# must survive its own probes failing.
 default_model() {
   case "$1" in
-    grok)   grok models 2>/dev/null | sed -n 's/^Default model: //p' | head -1 ;;
-    codex)  sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' \
-              "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1 ;;
-    *)      echo "" ;;
+    grok)
+      grok models 2>/dev/null | sed -n 's/^Default model: //p' | head -1 || true
+      ;;
+    codex)
+      sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' \
+        "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1 || true
+      ;;
+    *)
+      echo ""
+      ;;
   esac
 }
 
 list_vendors() {
+  local v c d
   for v in grok codex claude deepseek; do
     c="$(vendor_cmd "$v")"
     if command -v "$c" >/dev/null 2>&1; then
-      d="$(default_model "$v")"
+      d="$(default_model "$v" 2>/dev/null)" || d=""
       printf '%-10s installed  %-28s default: %s\n' \
         "$v" "($(command -v "$c"))" "${d:-unknown}"
     else
@@ -80,53 +92,112 @@ list_vendors() {
   done
 }
 
-# --- argument parsing -------------------------------------------------------
+# ── arguments ────────────────────────────────────────────────────────────────
 
 [ $# -ge 1 ] || usage
 [ "$1" = "--list" ] && { list_vendors; exit 0; }
+[ "$1" = "--help" ] || [ "$1" = "-h" ] && usage
 
 vendor="$1"; shift
-cmd="$(vendor_cmd "$vendor")" || { echo "ask: unknown vendor '$vendor'" >&2; usage; }
+cmd="$(vendor_cmd "$vendor")" || die "unknown vendor '$vendor' (try: ask --list)"
+
+# An option whose value is missing used to swallow the next option: `--model
+# --resume abc` set the model to "--resume". Requiring the value to be
+# non-option-shaped turns that into an error instead of a wrong request.
+need_value() {
+  case "${2:-}" in
+    ''|-*) die "$1 needs a value" ;;
+  esac
+  printf '%s' "$2"
+}
 
 resume=""
 model=""
+end_of_options=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --resume) resume="${2:-}"; [ -n "$resume" ] || usage; shift 2 ;;
-    --model|-m) model="${2:-}"; [ -n "$model" ] || usage; shift 2 ;;
-    --help|-h) usage ;;
-    --) shift; break ;;
-    *) break ;;
+    --resume)   resume="$(need_value --resume "${2:-}")" || exit 2; shift 2 ;;
+    --model|-m) model="$(need_value --model "${2:-}")"   || exit 2; shift 2 ;;
+    --help|-h)  usage ;;
+    --)         end_of_options=1; shift; break ;;
+    -*)         die "unknown option '$1' (use -- before a prompt starting with a dash)" ;;
+    *)          break ;;
   esac
 done
 
-# All three first-party CLIs spell this the same way, so the flag is assembled
-# once here rather than per-vendor below. An empty array expands to nothing,
-# which leaves the vendor's own default in charge.
+# A trailing `-` asks for piped stdin to be folded into the prompt. It is
+# explicit because a pipe cannot be probed for waiting data without a race.
+read_stdin_too=""
+if [ $# -eq 2 ] && [ "$2" = "-" ]; then
+  read_stdin_too=1
+  set -- "$1"
+fi
+
+# Silently dropping the tail turned a mistyped command into a quietly different
+# question, which is worse than refusing it.
+if [ $# -gt 1 ]; then
+  die "unexpected extra argument '$2' — quote the whole prompt as one argument"
+fi
+
 model_flag=()
 [ -n "$model" ] && model_flag=(--model "$model")
 
+# ── prompt ───────────────────────────────────────────────────────────────────
+# Command substitution strips every trailing newline, so a sentinel is appended
+# and removed. Without it a diff on stdin silently loses its final blank lines,
+# and whether that matters depends on the reader.
+#
+# The sentinel has to be added and stripped at this outermost capture. Wrapping
+# it in a helper does not work: the substitution that captures the helper's
+# output strips the newlines again, which is how this was wrong the first time.
 prompt="${1:-}"
+
+# The sentinel below must be appended and stripped at the outermost capture.
+# Putting it in a helper does not work — the substitution that captures the
+# helper's own output strips the newlines again. This was written wrong twice
+# before the test caught it; keep it inline.
+
 if [ -z "$prompt" ]; then
-  # No prompt argument: take it from stdin, but only if stdin is not a TTY.
-  # Otherwise we would hang waiting for input the caller never intended to give.
-  if [ -t 0 ]; then usage; fi
-  prompt="$(cat)"
+  # No prompt argument: stdin is the prompt, and blocking for it is correct —
+  # the caller supplied the message no other way.
+  [ -t 0 ] && usage
+  piped="$(cat; printf x)"; piped="${piped%x}"
+  [ -n "$piped" ] || die "empty prompt"
+  prompt="$piped"
+elif [ -n "$read_stdin_too" ] || [ -f /dev/stdin ]; then
+  # A prompt argument was given and stdin should be folded in as well.
+  #
+  # Whether to do that is decided by what stdin *is*, not by whether bytes
+  # happen to be waiting. Two rejected alternatives:
+  #
+  #   Read whenever stdin is not a TTY — hangs forever when a non-interactive
+  #   caller passes down an open but idle stdin, which is the normal situation
+  #   when one agent invokes another, i.e. this script's main use.
+  #
+  #   Poll with `read -t 0` — races a fast writer, so the input is dropped
+  #   sometimes. Non-deterministic loss is worse than consistent refusal,
+  #   because nothing tells the caller which run lost the data.
+  #
+  # A redirect from a regular file (`< change.diff`) has no race: the bytes are
+  # already there. A pipe does, so combining from a pipe is explicit — end the
+  # command with `-`.
+  piped="$(cat; printf x)"; piped="${piped%x}"
+  # Appending rather than choosing means the diff is sent, not discarded.
+  [ -n "$piped" ] && prompt="$prompt"$'\n\n'"$piped"
 fi
-[ -n "$prompt" ] || { echo "ask: empty prompt" >&2; exit 2; }
 
-command -v "$cmd" >/dev/null 2>&1 || {
-  echo "ask: '$cmd' is not installed or not on PATH" >&2
-  exit 3
-}
+command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is not installed or not on PATH" 3
 
-# --- dispatch ---------------------------------------------------------------
+# ── dispatch ─────────────────────────────────────────────────────────────────
 # Flag names below are the part most likely to drift. When a vendor renames
-# something, fix it here; nothing else needs to change.
+# something, fix it here; nothing else needs to change. tests/run.sh asserts on
+# the argv each branch builds.
 
 case "$vendor" in
   grok)
-    # --always-approve (not --auto-approve) lets tool calls run unattended.
+    # --always-approve, not --auto-approve: the latter does not exist and dies
+    # with "unexpected argument". The prompt rides as a flag value, so a
+    # leading dash in it is already safe.
     if [ -n "$resume" ]; then
       exec grok -p "$prompt" --always-approve --resume "$resume" ${model_flag[@]+"${model_flag[@]}"}
     else
@@ -135,9 +206,13 @@ case "$vendor" in
     ;;
 
   codex)
-    # codex refuses to start outside a Git repository unless told otherwise,
-    # and a sandboxed child has no network by default — which matters as soon
-    # as the task involves reaching any API.
+    # --skip-git-repo-check: codex refuses to start outside a Git repository,
+    # and scratch directories are where that bites. The sandbox is opened to
+    # the network because the usual reason to call codex from here is to have
+    # it reach another vendor's API.
+    #
+    # The prompt is positional, so `--` is required to keep a leading dash from
+    # being parsed as a codex flag.
     codex_args=(
       exec
       --skip-git-repo-check
@@ -145,13 +220,14 @@ case "$vendor" in
       -c sandbox_workspace_write.network_access=true
     )
     if [ -n "$resume" ]; then
-      exec codex "${codex_args[@]}" ${model_flag[@]+"${model_flag[@]}"} resume "$resume" "$prompt"
+      exec codex "${codex_args[@]}" ${model_flag[@]+"${model_flag[@]}"} resume "$resume" -- "$prompt"
     else
-      exec codex "${codex_args[@]}" ${model_flag[@]+"${model_flag[@]}"} "$prompt"
+      exec codex "${codex_args[@]}" ${model_flag[@]+"${model_flag[@]}"} -- "$prompt"
     fi
     ;;
 
   claude)
+    # The prompt rides as a flag value, so no -- guard is needed.
     if [ -n "$resume" ]; then
       exec claude -p "$prompt" --resume "$resume" ${model_flag[@]+"${model_flag[@]}"}
     else
@@ -160,9 +236,12 @@ case "$vendor" in
     ;;
 
   deepseek)
-    # DeepSeek ships no first-party CLI; this slot is whatever wrapper you put
-    # on PATH under that name. Model selection is the wrapper's business, so
-    # --model is passed through only if it accepts one.
+    # DeepSeek ships no first-party CLI; this slot is whatever wrapper is on
+    # PATH under that name. Its resume convention is unknown, so a --resume
+    # here is refused rather than accepted and dropped — an ignored resume
+    # restarts the conversation while looking like it continued, which is the
+    # failure this whole wrapper exists to avoid.
+    [ -z "$resume" ] || die "--resume is not supported for deepseek; omit it or use another vendor"
     exec deepseek ${model_flag[@]+"${model_flag[@]}"} "$prompt"
     ;;
 esac
