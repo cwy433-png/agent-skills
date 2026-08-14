@@ -19,10 +19,10 @@ fix that.
 
 ## Install
 
-Clone once, then link into whichever hosts you use:
+Clone this repo once, then link into whichever hosts you use:
 
 ```bash
-git clone https://github.com/cwy433-png/agent-skills.git ~/agent-skills
+git clone <this-repo> ~/agent-skills
 
 for host in ~/.claude ~/.codex ~/.grok ~/.workbuddy; do
   [ -d "$host" ] || continue
@@ -63,8 +63,11 @@ When a vendor renames a flag, fix it in `bin/ask` and every host picks up the
 change. Exit codes: `2` bad usage, `3` CLI not installed, `4` CLI not
 authenticated; anything else is the child's own exit code.
 
-`ask deepseek` expects a `deepseek` command on PATH, provided separately by
-[delegate-to-deepseek](https://github.com/cwy433-png/delegate-to-deepseek).
+`ask deepseek` expects a `deepseek` command on PATH. DeepSeek ships no first-
+party CLI, so this slot is filled by whatever wrapper you use — typically a
+second CLI pointed at DeepSeek's Anthropic-compatible endpoint. Drop one on
+PATH under that name and it works like the rest; leave it out and `ask --list`
+simply reports it missing.
 
 Each vendor needs its own credentials on the machine. A valid subscription is
 not the same as a logged-in CLI — check with `ask --list` and the vendor's own
