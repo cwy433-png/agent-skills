@@ -77,6 +77,57 @@ Choosing peer conversation for production work buys context bloat and cross-
 contamination for nothing. Choosing supervisor DAG for a debate gets you your
 own opinion echoed back through a summarizer.
 
+## Running a supervisor DAG
+
+Many hosts only offer this shape — fan work out to independent agents, collect
+what comes back, summarize. That is not a limitation to work around; it is the
+topology you want most of the time. Peer messaging is needed for one narrow
+purpose (below), and everything else is served by fan-out and integration.
+
+Two fan-out patterns do different jobs, and it is worth knowing which one you
+are running:
+
+**Division of labour** — a different bounded task per worker, integrated at the
+end. You are buying throughput and context isolation.
+
+**Redundancy** — the *same* task to several workers, then compared. You are
+buying uncorrelated mistakes. Note which direction the evidence runs: agreement
+between independent workers is weak evidence of correctness (they can share a
+blind spot), while **disagreement is strong evidence that something needs a
+human**. Treat a split verdict as the finding, not as noise to average away.
+
+### Independent disagreement vs engaged disagreement
+
+Redundancy gives you *independent* disagreement: N opinions that never saw each
+other. It is cheap, fully parallel, and its errors do not correlate — but no
+worker ever addresses another's actual argument, so you learn **that** they
+differ, not **why**.
+
+Peer conversation gives you *engaged* disagreement: each side attacks the other's
+weakest point until the real crux surfaces. That is more informative and costs
+round trips, sequencing, and a host that can pass messages between agents.
+
+So escalate rather than choosing upfront: run redundancy first, and if the
+outputs disagree in a way the artifacts alone cannot settle, take that one
+disagreement to an engaged round. Most disagreements resolve at the first step,
+which is why a host that cannot do peer messaging is rarely blocked in practice.
+
+### What the supervisor owes the work
+
+- **Write self-contained worker prompts.** An isolated worker shares none of
+  your context, so "as we discussed" and "the file we looked at" resolve to
+  nothing. State the task, the inputs, and the expected output shape.
+- **Keep raw outputs addressable.** The summary is a view over the artifacts,
+  not a replacement for them. Once the originals are gone, nobody can check
+  whether the summary dropped the part that mattered.
+- **Reconcile, do not average.** When two workers conflict, pick one with a
+  stated reason or escalate it. Blending two incompatible answers produces a
+  third answer that neither worker would defend and no evidence supports.
+- **Record dispatch and result.** Which task went where, and where the output
+  landed. Not bookkeeping for its own sake: an LLM supervisor cannot reliably
+  tell "I dispatched this" from "I considered dispatching this", so the record
+  is the only thing that knows whether a worker is still owed.
+
 ## Concurrent edits are a filesystem problem
 
 When several agents touch the same repo, what breaks is not message delivery —
