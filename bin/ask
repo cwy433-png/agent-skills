@@ -18,16 +18,21 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-usage: ask <vendor> [--resume <id>] [prompt]
+usage: ask <vendor> [--model <id>] [--resume <id>] [prompt]
 
   vendor   grok | codex | claude | deepseek
   prompt   the message; if omitted, read from stdin
 
+  --model <id>    pin the model instead of taking the vendor's configured
+                  default. Worth doing whenever the answer matters: the point
+                  of asking a second vendor is a different model, and if you
+                  did not name it you do not actually know what you asked.
   --resume <id>   continue an existing session instead of starting a new one
-  --list          print which vendors are installed and reachable
+  --list          print which vendors are installed, and their default model
 
 Examples:
   ask grok "attack the weakest part of this argument: ..."
+  ask codex --model gpt-5.6-sol "review this design"
   echo "review this diff" | ask codex
   ask claude --resume 019f... "follow up on your last point"
 EOF
@@ -50,11 +55,25 @@ vendor_cmd() {
   esac
 }
 
+# Report the default each vendor would use when --model is omitted. Knowing
+# this matters more than it looks: an unpinned cross-vendor comparison silently
+# changes meaning whenever one of these configs is edited.
+default_model() {
+  case "$1" in
+    grok)   grok models 2>/dev/null | sed -n 's/^Default model: //p' | head -1 ;;
+    codex)  sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' \
+              "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null | head -1 ;;
+    *)      echo "" ;;
+  esac
+}
+
 list_vendors() {
   for v in grok codex claude deepseek; do
     c="$(vendor_cmd "$v")"
     if command -v "$c" >/dev/null 2>&1; then
-      printf '%-10s installed  (%s)\n' "$v" "$(command -v "$c")"
+      d="$(default_model "$v")"
+      printf '%-10s installed  %-28s default: %s\n' \
+        "$v" "($(command -v "$c"))" "${d:-unknown}"
     else
       printf '%-10s missing\n' "$v"
     fi
@@ -70,14 +89,22 @@ vendor="$1"; shift
 cmd="$(vendor_cmd "$vendor")" || { echo "ask: unknown vendor '$vendor'" >&2; usage; }
 
 resume=""
+model=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --resume) resume="${2:-}"; [ -n "$resume" ] || usage; shift 2 ;;
+    --model|-m) model="${2:-}"; [ -n "$model" ] || usage; shift 2 ;;
     --help|-h) usage ;;
     --) shift; break ;;
     *) break ;;
   esac
 done
+
+# All three first-party CLIs spell this the same way, so the flag is assembled
+# once here rather than per-vendor below. An empty array expands to nothing,
+# which leaves the vendor's own default in charge.
+model_flag=()
+[ -n "$model" ] && model_flag=(--model "$model")
 
 prompt="${1:-}"
 if [ -z "$prompt" ]; then
@@ -101,9 +128,9 @@ case "$vendor" in
   grok)
     # --always-approve (not --auto-approve) lets tool calls run unattended.
     if [ -n "$resume" ]; then
-      exec grok -p "$prompt" --always-approve --resume "$resume"
+      exec grok -p "$prompt" --always-approve --resume "$resume" ${model_flag[@]+"${model_flag[@]}"}
     else
-      exec grok -p "$prompt" --always-approve
+      exec grok -p "$prompt" --always-approve ${model_flag[@]+"${model_flag[@]}"}
     fi
     ;;
 
@@ -118,23 +145,24 @@ case "$vendor" in
       -c sandbox_workspace_write.network_access=true
     )
     if [ -n "$resume" ]; then
-      exec codex "${codex_args[@]}" resume "$resume" "$prompt"
+      exec codex "${codex_args[@]}" ${model_flag[@]+"${model_flag[@]}"} resume "$resume" "$prompt"
     else
-      exec codex "${codex_args[@]}" "$prompt"
+      exec codex "${codex_args[@]}" ${model_flag[@]+"${model_flag[@]}"} "$prompt"
     fi
     ;;
 
   claude)
     if [ -n "$resume" ]; then
-      exec claude -p "$prompt" --resume "$resume"
+      exec claude -p "$prompt" --resume "$resume" ${model_flag[@]+"${model_flag[@]}"}
     else
-      exec claude -p "$prompt"
+      exec claude -p "$prompt" ${model_flag[@]+"${model_flag[@]}"}
     fi
     ;;
 
   deepseek)
-    # Provided by the delegate-to-deepseek skill, which wraps a second CLI
-    # pointed at DeepSeek's Anthropic-compatible endpoint.
-    exec deepseek "$prompt"
+    # DeepSeek ships no first-party CLI; this slot is whatever wrapper you put
+    # on PATH under that name. Model selection is the wrapper's business, so
+    # --model is passed through only if it accepts one.
+    exec deepseek ${model_flag[@]+"${model_flag[@]}"} "$prompt"
     ;;
 esac

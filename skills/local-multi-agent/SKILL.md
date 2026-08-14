@@ -32,15 +32,23 @@ Use the `ask` wrapper that ships alongside this skill:
 
 ```
 ask grok "attack the weakest part of this argument: ..."
+ask codex --model gpt-5.6-sol "review this design"
 ask codex "review the diff on stdin" < change.diff
 ask claude --resume <session-id> "follow up on your earlier point"
-ask --list          # which vendors are installed
+ask --list          # which vendors are installed, and their default model
 ```
 
 It normalizes the per-vendor spellings of "headless prompt", "auto-approve",
-and "resume by id". Prefer it over hand-writing vendor flags: those change
-between releases, and hardcoding them in prose means every copy of that prose
-rots independently.
+"resume by id", and "pin the model". Prefer it over hand-writing vendor flags:
+those change between releases, and hardcoding them in prose means every copy of
+that prose rots independently.
+
+**Name the model whenever the answer matters.** Left unpinned, each CLI uses
+whatever its own config happens to say. The whole reason to ask a second vendor
+is to reach a different model, so an unpinned comparison cannot tell you what
+you compared, and it changes meaning silently the next time someone edits a
+config. `ask --list` shows the current defaults; a bad model id fails loudly
+instead of falling back.
 
 If `ask` is not on PATH, check `--help` on the vendor's own CLI rather than
 trusting a remembered flag name.

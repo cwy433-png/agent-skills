@@ -54,6 +54,7 @@ instructions means N copies that rot independently, so `ask` holds them instead:
 
 ```bash
 ask grok "attack the weakest part of this argument: ..."
+ask codex --model gpt-5.6-sol "review this design"
 ask codex "review the diff on stdin" < change.diff
 ask claude --resume <session-id> "follow up on your earlier point"
 ask --list
@@ -62,6 +63,18 @@ ask --list
 When a vendor renames a flag, fix it in `bin/ask` and every host picks up the
 change. Exit codes: `2` bad usage, `3` CLI not installed, `4` CLI not
 authenticated; anything else is the child's own exit code.
+
+### Pin the model when the answer matters
+
+Omit `--model` and each CLI quietly uses whatever its own config says. That is
+fine for throwaway questions and wrong for anything you will act on: the reason
+to ask a second vendor is to get a *different model*, so an unpinned comparison
+does not tell you what you actually compared — and it silently changes meaning
+the next time one of those configs is edited.
+
+`ask --list` prints each vendor's current default, so you can see what you would
+get before deciding whether to pin. Naming a model that does not exist fails
+loudly rather than falling back to the default, which is what you want.
 
 `ask deepseek` expects a `deepseek` command on PATH. DeepSeek ships no first-
 party CLI, so this slot is filled by whatever wrapper you use — typically a
