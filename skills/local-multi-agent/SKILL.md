@@ -134,6 +134,51 @@ which is why a host that cannot do peer messaging is rarely blocked in practice.
   tell "I dispatched this" from "I considered dispatching this", so the record
   is the only thing that knows whether a worker is still owed.
 
+## Accepting what comes back
+
+Judge a worker by the state of the tree, not by what it says about the tree.
+These tools are trained to sound finished, so a confident closing summary is
+evidence of fluency and nothing else. Its report is a claim; the diff, the test
+run, and the acceptance condition are the evidence.
+
+So before integrating anything, look:
+
+- `git status` and `git diff` — were the files it named actually changed, and
+  only those?
+- Run the tests and the build yourself. A worker reporting "tests pass" has
+  told you what it believes.
+- Check the acceptance condition you wrote into the assignment. If you did not
+  write one, that gap is upstream in the brief, not in the worker.
+
+When the evidence contradicts the claim, the useful move is to re-brief with the
+failure attached — the actual command and its actual output — rather than to ask
+again more firmly. A worker that cannot see the failure cannot fix it.
+
+This is the single highest-yield habit in the whole document. Everything else
+here reduces the chance of a bad outcome; this is what catches one.
+
+## Bounding the wait
+
+Give every dispatch a deadline. A child CLI can hang on a network call, sit
+waiting for an interactive confirmation that no one will type, or loop. None of
+those announce themselves — from the outside a hung child and a thinking child
+look identical, and a run left unbounded stalls until someone notices.
+
+Three habits cover it:
+
+- Set an explicit timeout on every call, sized to the task rather than to
+  patience — `ask --timeout <seconds>` if you are using the wrapper. A tight
+  bound that occasionally fires is more useful than a generous one that never
+  does, because the fired bound tells you something.
+- Use each CLI's non-interactive mode, so a prompt for confirmation becomes an
+  error instead of a silent wait.
+- Bound the retries. One retry is worth it when the failure looks mechanical;
+  after that, stop and report the task incomplete.
+
+When the bound is reached, remember there is always a fallback executor: you.
+Doing the task directly is a legitimate outcome, and often faster than a third
+attempt at delegating it.
+
 ## Concurrent edits are a filesystem problem
 
 When several agents touch the same repo, what breaks is not message delivery —
@@ -229,6 +274,12 @@ mechanical, then stop and say what is missing.
   workflow on top of it. When a CLI is not signed in, hand the login command to
   the human and let them complete the browser step — do not attempt to
   authenticate on their behalf.
+- **A vendor can change what a flag means while keeping its spelling.** The call
+  still exits zero and still returns plausible output; only the behaviour moved
+  — a pinned model quietly ignored, a resume that starts a fresh session. Since
+  nothing breaks, nothing prompts you to look. A version string is the cheap
+  cue: `ask --check` reports drift, and a change is the signal to re-verify the
+  affected calls against the real CLI before trusting them again.
 
 Cross-vendor rounds bill the other vendor's account, and a substantive
 multi-round exchange can run well into six figures of tokens. Say so before

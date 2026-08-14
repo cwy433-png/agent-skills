@@ -33,7 +33,11 @@ usage: ask <vendor> [--model <id>] [--resume <id>] [--] [prompt]
                   did not name it you do not actually know what you asked.
   --resume <id>   continue an existing session instead of starting a new one
   --              stop option parsing; everything after is the prompt
+  --timeout <s>   kill the child after this many seconds (exit 124)
   --list          print which vendors are installed, and their default model
+  --check         report vendor version drift; --check --accept records a
+                  new baseline. A flag can keep its spelling and change its
+                  meaning, so a version change is the cue to re-verify live.
 
 Examples:
   ask grok "attack the weakest part of this argument: ..."
@@ -78,6 +82,65 @@ default_model() {
   esac
 }
 
+# ── version drift ────────────────────────────────────────────────────────────
+# The failure this guards against: a vendor keeps accepting a flag, keeps
+# exiting zero, keeps producing plausible output, and quietly changes what the
+# flag means. No offline test sees that, and no error appears — the tool just
+# does the wrong thing successfully. Verifying it live on every run would cost a
+# call each time; verifying it only when something visibly breaks is too late,
+# because nothing visibly breaks.
+#
+# A version string is the cheap middle: free to read, and it changes exactly
+# when the semantics might have. `--check` reports drift so a live re-check is
+# triggered by evidence rather than by habit.
+
+version_file() {
+  printf '%s/agent-skills/vendor-versions' "${XDG_CACHE_HOME:-$HOME/.cache}"
+}
+
+vendor_version() {
+  "$1" --version 2>/dev/null | head -1 | tr -d '\r' || true
+}
+
+check_versions() {
+  local accept="${1:-}" f v c now old status drift=0
+  f="$(version_file)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  : > "$f.new"
+  for v in grok codex claude deepseek; do
+    c="$(vendor_cmd "$v")"
+    command -v "$c" >/dev/null 2>&1 || continue
+    now="$(vendor_version "$c")"
+    [ -n "$now" ] || now="(no version output)"
+    printf '%s\t%s\n' "$v" "$now" >> "$f.new"
+    old="$(grep "^$v	" "$f" 2>/dev/null | head -1 | cut -f2-)" || old=""
+    if [ -z "$old" ]; then
+      status="new"
+    elif [ "$old" = "$now" ]; then
+      status="unchanged"
+    else
+      status="CHANGED  (was: $old)"
+      drift=1
+    fi
+    printf '%-10s %-34s %s\n' "$v" "$now" "$status"
+  done
+  if [ -n "$accept" ]; then
+    mv "$f.new" "$f"
+    echo
+    echo "baseline recorded"
+    return 0
+  fi
+  rm -f "$f.new"
+  if [ "$drift" -eq 1 ]; then
+    echo
+    echo "A version changed. Re-verify the affected calls against the real CLI —"
+    echo "flags can keep their spelling while changing their meaning. Then run"
+    echo "  ask --check --accept"
+    return 1
+  fi
+  return 0
+}
+
 list_vendors() {
   local v c d
   for v in grok codex claude deepseek; do
@@ -96,6 +159,10 @@ list_vendors() {
 
 [ $# -ge 1 ] || usage
 [ "$1" = "--list" ] && { list_vendors; exit 0; }
+if [ "$1" = "--check" ]; then
+  check_versions "${2:-}"
+  exit $?
+fi
 [ "$1" = "--help" ] || [ "$1" = "-h" ] && usage
 
 vendor="$1"; shift
@@ -113,11 +180,17 @@ need_value() {
 
 resume=""
 model=""
+timeout_s=""
 end_of_options=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --resume)   resume="$(need_value --resume "${2:-}")" || exit 2; shift 2 ;;
     --model|-m) model="$(need_value --model "${2:-}")"   || exit 2; shift 2 ;;
+    --timeout)  timeout_s="$(need_value --timeout "${2:-}")" || exit 2
+                case "$timeout_s" in
+                  ''|*[!0-9]*) die "--timeout needs whole seconds" ;;
+                esac
+                shift 2 ;;
     --help|-h)  usage ;;
     --)         end_of_options=1; shift; break ;;
     -*)         die "unknown option '$1' (use -- before a prompt starting with a dash)" ;;
@@ -145,17 +218,13 @@ model_flag=()
 # ── prompt ───────────────────────────────────────────────────────────────────
 # Command substitution strips every trailing newline, so a sentinel is appended
 # and removed. Without it a diff on stdin silently loses its final blank lines,
-# and whether that matters depends on the reader.
+# and only the reader knows whether that mattered.
 #
-# The sentinel has to be added and stripped at this outermost capture. Wrapping
-# it in a helper does not work: the substitution that captures the helper's
-# output strips the newlines again, which is how this was wrong the first time.
+# The sentinel must be added and stripped at the outermost capture. Putting it
+# in a helper does not work — the substitution that captures the helper's own
+# output strips the newlines again. That was written wrong twice before the
+# test caught it; keep it inline.
 prompt="${1:-}"
-
-# The sentinel below must be appended and stripped at the outermost capture.
-# Putting it in a helper does not work — the substitution that captures the
-# helper's own output strips the newlines again. This was written wrong twice
-# before the test caught it; keep it inline.
 
 if [ -z "$prompt" ]; then
   # No prompt argument: stdin is the prompt, and blocking for it is correct —
@@ -189,59 +258,87 @@ fi
 command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is not installed or not on PATH" 3
 
 # ── dispatch ─────────────────────────────────────────────────────────────────
-# Flag names below are the part most likely to drift. When a vendor renames
-# something, fix it here; nothing else needs to change. tests/run.sh asserts on
-# the argv each branch builds.
+# Each branch builds an argument vector; one runner below executes it. Keeping
+# execution in a single place is what lets --timeout exist at all — four `exec`
+# calls have nothing left to supervise. Flag names here are the part most likely
+# to drift; when a vendor renames something this is the only place to fix, and
+# tests/run.sh asserts on the vector each branch produces.
 
+argv=()
 case "$vendor" in
   grok)
     # --always-approve, not --auto-approve: the latter does not exist and dies
-    # with "unexpected argument". The prompt rides as a flag value, so a
-    # leading dash in it is already safe.
-    if [ -n "$resume" ]; then
-      exec grok -p "$prompt" --always-approve --resume "$resume" ${model_flag[@]+"${model_flag[@]}"}
-    else
-      exec grok -p "$prompt" --always-approve ${model_flag[@]+"${model_flag[@]}"}
-    fi
+    # with "unexpected argument". The prompt rides as a flag value, so a leading
+    # dash in it is already safe.
+    argv=(grok -p "$prompt" --always-approve)
+    [ -n "$resume" ] && argv+=(--resume "$resume")
+    argv+=(${model_flag[@]+"${model_flag[@]}"})
     ;;
 
   codex)
     # --skip-git-repo-check: codex refuses to start outside a Git repository,
-    # and scratch directories are where that bites. The sandbox is opened to
-    # the network because the usual reason to call codex from here is to have
-    # it reach another vendor's API.
-    #
-    # The prompt is positional, so `--` is required to keep a leading dash from
-    # being parsed as a codex flag.
-    codex_args=(
-      exec
-      --skip-git-repo-check
-      -s workspace-write
-      -c sandbox_workspace_write.network_access=true
-    )
-    if [ -n "$resume" ]; then
-      exec codex "${codex_args[@]}" ${model_flag[@]+"${model_flag[@]}"} resume "$resume" -- "$prompt"
-    else
-      exec codex "${codex_args[@]}" ${model_flag[@]+"${model_flag[@]}"} -- "$prompt"
-    fi
+    # and scratch directories are where that bites. The sandbox is opened to the
+    # network because the usual reason to reach codex from here is to have it
+    # call another vendor's API.
+    argv=(codex exec --skip-git-repo-check
+          -s workspace-write
+          -c sandbox_workspace_write.network_access=true)
+    argv+=(${model_flag[@]+"${model_flag[@]}"})
+    [ -n "$resume" ] && argv+=(resume "$resume")
+    # The prompt is positional here, so -- keeps a leading dash in it from being
+    # read as a codex flag.
+    argv+=(-- "$prompt")
     ;;
 
   claude)
     # The prompt rides as a flag value, so no -- guard is needed.
-    if [ -n "$resume" ]; then
-      exec claude -p "$prompt" --resume "$resume" ${model_flag[@]+"${model_flag[@]}"}
-    else
-      exec claude -p "$prompt" ${model_flag[@]+"${model_flag[@]}"}
-    fi
+    argv=(claude -p "$prompt")
+    [ -n "$resume" ] && argv+=(--resume "$resume")
+    argv+=(${model_flag[@]+"${model_flag[@]}"})
     ;;
 
   deepseek)
     # DeepSeek ships no first-party CLI; this slot is whatever wrapper is on
-    # PATH under that name. Its resume convention is unknown, so a --resume
-    # here is refused rather than accepted and dropped — an ignored resume
-    # restarts the conversation while looking like it continued, which is the
-    # failure this whole wrapper exists to avoid.
+    # PATH under that name. Its resume convention is unknown, so a --resume here
+    # is refused rather than accepted and dropped — an ignored resume restarts
+    # the conversation while looking like it continued, which is the failure
+    # this wrapper exists to avoid.
     [ -z "$resume" ] || die "--resume is not supported for deepseek; omit it or use another vendor"
-    exec deepseek ${model_flag[@]+"${model_flag[@]}"} "$prompt"
+    argv=(deepseek)
+    argv+=(${model_flag[@]+"${model_flag[@]}"})
+    argv+=("$prompt")
     ;;
 esac
+
+# ── run ──────────────────────────────────────────────────────────────────────
+# Without a deadline the process is simply handed over. With one, it has to be
+# supervised, which is why this is not always an exec: a hung child and a
+# thinking child look identical from outside, and an unbounded wait ends when
+# somebody happens to notice.
+
+if [ -z "$timeout_s" ]; then
+  exec "${argv[@]}"
+fi
+
+"${argv[@]}" &
+child=$!
+waited=0
+while kill -0 "$child" 2>/dev/null; do
+  if [ "$waited" -ge "$timeout_s" ]; then
+    # Ask first, insist after: a CLI given a chance to exit cleanly may still
+    # flush its output, and losing a partial answer to an impatient kill wastes
+    # the whole call.
+    kill -TERM "$child" 2>/dev/null
+    for _ in 1 2 3 4; do
+      kill -0 "$child" 2>/dev/null || break
+      sleep 0.5
+    done
+    kill -KILL "$child" 2>/dev/null
+    wait "$child" 2>/dev/null
+    die "timed out after ${timeout_s}s" 124
+  fi
+  sleep 1
+  waited=$((waited + 1))
+done
+wait "$child"
+exit $?

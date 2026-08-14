@@ -64,8 +64,13 @@ ask --list
 ```
 
 When a vendor renames a flag, fix it in `bin/ask` and every host picks up the
-change. Exit codes: `2` bad usage, `3` CLI not on PATH; anything else is the
-child's own exit code, including its authentication failures.
+change. Exit codes: `2` bad usage, `3` CLI not on PATH, `124` timed out;
+anything else is the child's own exit code, including its authentication
+failures.
+
+`--timeout <seconds>` bounds the call. A hung child and a thinking child look
+identical from the outside, so without a deadline an orchestration stalls until
+somebody notices.
 
 Extra input is folded into the prompt rather than replacing or discarding it:
 
@@ -97,8 +102,20 @@ failure aborting the caller. Those only appear when something actually runs.
 
 What it cannot catch is a vendor that keeps accepting a flag while quietly
 changing what the flag means — still exit zero, still plausible output, wrong
-behaviour. No offline test sees that. Re-check against the real CLI when you
-add or change a vendor, and when a vendor's version changes.
+behaviour. No offline test sees that, and nothing visibly breaks, so waiting for
+a failure means waiting forever while ordinary work becomes the detector.
+
+`ask --check` is the cheap trigger for looking:
+
+```bash
+ask --check           # report version drift; exits 1 if anything changed
+ask --check --accept  # record the current versions as the baseline
+```
+
+A version string is free to read and changes exactly when the semantics might
+have. When it reports a change, verify the affected calls against the real CLI,
+then accept the new baseline. Checking live on every run would cost a call each
+time; checking only when something breaks is too late.
 
 ### Pin the model when the answer matters
 

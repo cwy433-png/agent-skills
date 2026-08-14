@@ -40,6 +40,7 @@ done
 # Deliberately does NOT read stdin. A stub that always drains stdin blocks on
 # an idle inherited pipe, which is the very condition one of these tests sets
 # up — the stub would hang instead of the assertion failing.
+[ -n "${STUB_SLEEP:-}" ] && [ "$STUB_SLEEP" -gt 0 ] && sleep "$STUB_SLEEP"
 printf 'stub-stdout\n'
 printf 'stub-stderr\n' >&2
 exit "${STUB_EXIT:-0}"
@@ -159,6 +160,26 @@ check "no model flag when not asked" "0" "$(argv_of | grep -c -x -- '--model')"
 # conversation — the exact failure the guidance warns about.
 out="$(run_ask deepseek --resume abc "x" 2>&1)"; rc=$?
 check "a resume that cannot be honoured is refused, not ignored" "2" "$rc"
+
+# ── timeout ──────────────────────────────────────────────────────────────────
+# A hung child and a thinking child look identical from outside, so the deadline
+# is the only thing that tells them apart. STUB_SLEEP makes the stub hang.
+
+start=$(date +%s)
+STUB_SLEEP=30 run_ask grok --timeout 2 "x" >/dev/null 2>&1; rc=$?
+elapsed=$(( $(date +%s) - start ))
+check "a hung child is killed at the deadline" "124" "$rc"
+check "the deadline is actually enforced, not merely documented" \
+  "yes" "$([ "$elapsed" -lt 15 ] && echo yes || echo "no (${elapsed}s)")"
+
+STUB_SLEEP=0 run_ask grok --timeout 30 "x" >/dev/null 2>&1
+check "a child that finishes in time is not disturbed" "0" "$?"
+
+STUB_EXIT=5 run_ask grok --timeout 30 "x" >/dev/null 2>&1
+check "exit status survives the timeout wrapper" "5" "$?"
+
+out="$(run_ask grok --timeout abc "x" 2>&1)"; rc=$?
+check "a non-numeric timeout is refused" "2" "$rc"
 
 # ── --list ───────────────────────────────────────────────────────────────────
 
