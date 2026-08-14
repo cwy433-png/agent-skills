@@ -92,10 +92,34 @@ Drop a directory under `skills/` containing a `SKILL.md`. Keep it host-neutral:
 refer to `ask` rather than a specific vendor's flags, and prefer plain Git and
 shell over any one host's built-in tooling, so the same text works everywhere.
 
-The rule of thumb for what belongs in a skill: **encode what fails silently, not
-what `--help` will tell you.** Flag names are cheap to look up and rot fast.
-Behaviours you only discover by a run dying are expensive to rediscover and
-worth writing down.
+### What belongs in prose
+
+**Anything reachable by one command should not be written down; what gets
+written down should be the judgement you cannot query.**
+
+A document that repeats a queryable fact has two failure modes and no upside: it
+goes stale silently, and while stale it is *more* convincing than no
+documentation at all, because it reads like knowledge. `ask --list` cannot go
+stale — it stores the method, not the answer.
+
+This sorts naturally into three layers that decay at very different rates, and
+the whole trick is not to let a fast layer leak into a slow one:
+
+| Layer | Example | Goes stale in | Lives in |
+|---|---|---|---|
+| Judgement | which topology fits, when infrastructure is justified, how to force real disagreement | years | `SKILL.md` |
+| Flag spelling | `--always-approve`, the escape hatch for Git-repo checks, opening the sandbox to the network | months | `bin/ask`, one file |
+| Model ids, versions, paths | whatever `ask --list` prints today | weeks | nowhere — queried |
+
+The middle layer still rots, but it rots *loudly*: a wrong flag makes a run fail
+immediately, while a wrong sentence in a document quietly misleads for months.
+That is the argument for putting volatile mechanics in code and keeping prose
+for the parts that stay true.
+
+The corollary for the top layer: **encode what fails silently.** A behaviour you
+only discover by watching a run die — a sandboxed child with no network, a CLI
+that refuses to start outside a repository — costs a run to rediscover every
+time it is forgotten. That is exactly what is worth a paragraph.
 
 ## Licence
 
