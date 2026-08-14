@@ -32,7 +32,7 @@ Use the `ask` wrapper that ships alongside this skill:
 
 ```
 ask grok "attack the weakest part of this argument: ..."
-ask codex --model gpt-5.6-sol "review this design"
+ask codex --model <id> "review this design"   # see: ask --list
 ask codex "review the diff on stdin" < change.diff
 ask claude --resume <session-id> "follow up on your earlier point"
 ask --list          # which vendors are installed, and their default model

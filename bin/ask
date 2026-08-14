@@ -32,7 +32,7 @@ usage: ask <vendor> [--model <id>] [--resume <id>] [prompt]
 
 Examples:
   ask grok "attack the weakest part of this argument: ..."
-  ask codex --model gpt-5.6-sol "review this design"
+  ask codex --model <id> "review this design"   # see: ask --list
   echo "review this diff" | ask codex
   ask claude --resume 019f... "follow up on your last point"
 EOF
